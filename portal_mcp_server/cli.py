@@ -17,7 +17,7 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.fastmcp.server import Settings as FastMCPSettings
-from .paths import default_log_dir
+from .paths import ensure_log_dir
 from .connection_manager import get_manager
 from .shell_engine import ssh_exec
 from .file_ops import (ssh_upload_file, ssh_download_file, ssh_sync_directory,
@@ -45,22 +45,23 @@ from .local_exec import local_exec_with_env as _local_exec_env
 from .local_exec import local_sudo_exec_with_env as _local_sudo_exec_env
 
 _log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
-try:
-    _log_dir = default_log_dir()
-    _log_dir.mkdir(parents=True, exist_ok=True)
+# Logging is a convenience, never a start-up gate: an unwritable log dir must
+# not stop the MCP server (or the credential CLI) from running.
+_log_dir, _log_dir_error = ensure_log_dir()
+if _log_dir_error is not None:
+    print(f"[portal-mcp-server] WARNING: {_log_dir_error}", file=sys.stderr)
+else:
     try:
-        os.chmod(_log_dir, 0o700)  # owner-only: server.log records host/cmd context
-    except OSError:
-        pass
-    _server_log = _log_dir / "server.log"
-    _fh = logging.FileHandler(_server_log, encoding="utf-8")
-    try:
-        os.chmod(_server_log, 0o600)
-    except OSError:
-        pass
-    _log_handlers.append(_fh)
-except Exception as _log_err:
-    print(f"[portal-mcp-server] WARNING: could not open log file: {_log_err}", file=sys.stderr)
+        _server_log = _log_dir / "server.log"
+        _fh = logging.FileHandler(_server_log, encoding="utf-8")
+        try:
+            os.chmod(_server_log, 0o600)
+        except OSError:
+            pass
+        _log_handlers.append(_fh)
+    except Exception as _log_err:
+        print(f"[portal-mcp-server] WARNING: could not open log file: {_log_err}",
+              file=sys.stderr)
 
 logging.basicConfig(
     level=logging.INFO,

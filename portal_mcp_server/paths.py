@@ -242,6 +242,35 @@ def default_log_dir() -> Path:
     return _resolve("PORTAL_LOG_DIR", Path(_DIRS.user_log_dir))
 
 
+def ensure_log_dir() -> tuple[Path, str | None]:
+    """Best-effort creation of the log directory.
+
+    Returns ``(path, error)`` where ``error`` is a human-readable message when
+    the directory could not be created or prepared, else ``None``.
+
+    Callers must **not** turn a failure here into a start-up crash. Portal is a
+    long-lived server: on a read-only home, a sandboxed ``%LOCALAPPDATA%``, or
+    a container without a writable state dir, an unguarded ``mkdir`` at import
+    time makes the whole package unimportable — including the ``portal``
+    credential CLI that a user would reach for to fix it. The audit path keeps
+    its documented fail-closed behaviour per operation instead (see
+    :mod:`portal_mcp_server.audit`), so the failure stays actionable rather
+    than fatal.
+    """
+    directory = default_log_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return directory, f"cannot create log directory {directory}: {exc}"
+    # The dir holds audit.jsonl / server.log with commands, hosts and paths;
+    # keep it owner-only. best-effort (no-op / different semantics on Windows).
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:  # pragma: no cover - platform/permission dependent
+        pass
+    return directory, None
+
+
 def systemd_user_runtime_dir() -> Path:
     """Return the runtime dir provided by the systemd user session."""
     base = os.environ.get("XDG_RUNTIME_DIR")

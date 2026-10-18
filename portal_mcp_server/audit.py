@@ -28,16 +28,10 @@ import logging.handlers
 import os
 import time
 
-from .paths import default_log_dir
+from .paths import ensure_log_dir
 
-_log_dir = default_log_dir()
-_log_dir.mkdir(parents=True, exist_ok=True)
-# The log dir holds audit.jsonl (+ rotations) with commands / hosts / paths;
-# keep it owner-only. best-effort (no-op / different semantics on Windows).
-try:
-    os.chmod(_log_dir, 0o700)
-except OSError:  # pragma: no cover - platform/permission dependent
-    pass
+# Never fatal: an unusable log dir must not make the package unimportable.
+_log_dir, _log_dir_error = ensure_log_dir()
 _audit_file = _log_dir / "audit.jsonl"
 
 logger = logging.getLogger("portal_mcp.audit")
@@ -94,7 +88,7 @@ _AUDIT_BACKUPS = _int_env("PORTAL_AUDIT_BACKUPS", 5)
 _audit_writer = logging.getLogger("portal_mcp.audit.jsonl")
 _audit_writer.setLevel(logging.INFO)
 _audit_writer.propagate = False
-if not _audit_writer.handlers:
+if _log_dir_error is None and not _audit_writer.handlers:
     _h = _FailClosedRotatingHandler(
         _audit_file, maxBytes=_AUDIT_MAX_BYTES, backupCount=_AUDIT_BACKUPS,
         encoding="utf-8", delay=True,
@@ -126,13 +120,28 @@ def audit_log(host: str, command: str, result,
     # handler (_FailClosedRotatingHandler). Rotation is stdlib; re-raising in the
     # handler's handleError keeps the fail-closed guarantee, so a failed write
     # surfaces here and aborts the operation unless PORTAL_AUDIT_FAIL_OPEN is set.
+    if _log_dir_error is not None:
+        # The log directory was unusable at import time, so no file handler was
+        # installed. Keep the documented fail-closed contract (the operation is
+        # refused) but make the failure actionable and name the knob that fixes
+        # it — this is the symptom of a read-only / sandboxed state dir.
+        logger.warning("Audit log unavailable: %s", _log_dir_error)
+        if _fail_closed():
+            raise RuntimeError(
+                f"Audit log is unavailable ({_log_dir_error}). Point "
+                f"PORTAL_LOG_DIR at a writable directory, or set "
+                f"{_FAIL_OPEN_ENV}=1 to run without a durable audit log."
+            )
+        return
     try:
         _audit_writer.info(json.dumps(entry))
     except Exception as e:
         logger.warning(f"Audit write failed: {e}")
         if _fail_closed():
             raise RuntimeError(
-                f"Audit write failed and {_FAIL_OPEN_ENV} is not set: {e}"
+                f"Audit write failed and {_FAIL_OPEN_ENV} is not set: {e}. "
+                f"If {_log_dir} is not writable, point PORTAL_LOG_DIR at a "
+                f"writable directory."
             ) from e
 
 

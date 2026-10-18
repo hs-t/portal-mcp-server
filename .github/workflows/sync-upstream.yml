@@ -1,0 +1,60 @@
+name: Sync with upstream
+
+# Keeps this fork tracking TMYTiMidlY/portal-mcp-server without ever pushing
+# anything upstream: it only MERGES upstream/main into this fork's main.
+#
+# Merge (not force) is the whole point: local commits in this fork survive, and
+# a real conflict fails the job loudly instead of silently discarding either
+# side. Nothing is written back to the upstream repository — the remote below is
+# fetch-only in every practical sense (this workflow never pushes to it).
+#
+# Note: GitHub disables Actions on forks by default. Enable it once in
+# Actions → "I understand my workflows, go ahead and enable them", and make sure
+# Settings → Actions → General → Workflow permissions is "Read and write".
+
+on:
+  schedule:
+    - cron: '17 3 * * *'   # daily, off the hour to avoid the rush
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Guard: this workflow is pointless (and would fail) in the upstream repo.
+    if: github.repository == 'hs-t/portal-mcp-server'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream/main into main
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/TMYTiMidlY/portal-mcp-server.git
+          git fetch --no-tags upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already up to date with upstream/main."
+            exit 0
+          fi
+
+          echo "Upstream moved; merging."
+          if ! git merge --no-edit upstream/main; then
+            echo "::error title=Upstream merge conflict::Resolve the conflict locally \
+          (git fetch upstream && git merge upstream/main) and push; the fork's local \
+          changes were NOT discarded."
+            exit 1
+          fi
+
+          git push origin HEAD:main

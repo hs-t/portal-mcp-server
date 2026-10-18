@@ -72,12 +72,67 @@ def _isolate_runtime_paths() -> None:
 _isolate_runtime_paths()
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  POSIX-style ``~`` expansion on Windows.
+#
+#  Tests isolate the home directory the POSIX way — ``monkeypatch.setenv("HOME",
+#  tmp_path)`` — because on Linux/macOS that is what ``expanduser()`` consults.
+#  Windows' ``ntpath.expanduser`` instead prefers ``USERPROFILE`` and ignores
+#  ``HOME``, so every test that redirected HOME silently kept resolving ``~`` to
+#  the developer's real profile: ~45 failures on a Windows runner that were never
+#  real defects.
+#
+#  Installed at conftest *import* time rather than in a fixture: test modules
+#  import ``asyncssh`` during collection and some bind ``expanduser`` by name, so
+#  the shim must be in place before those imports run. It only takes effect when
+#  a test has explicitly redirected HOME away from the native profile, so nothing
+#  running against the real profile changes behaviour.
+# ──────────────────────────────────────────────────────────────────────────────
+def _install_posix_home_expansion_shim() -> None:
+    if os.name != "nt":
+        return
+    import pathlib
+
+    real_expanduser = os.path.expanduser
+
+    def _redirected_home() -> str | None:
+        home = os.environ.get("HOME")
+        if not home:
+            return None
+        native = os.environ.get("USERPROFILE", "")
+        if native and os.path.normcase(home) == os.path.normcase(native):
+            return None
+        return home
+
+    def expanduser(path):
+        home = _redirected_home()
+        text = os.fspath(path)
+        if home and (text == "~" or text[:2] in ("~/", "~\\")):
+            return home if text == "~" else os.path.join(home, text[2:])
+        return real_expanduser(path)
+
+    os.path.expanduser = expanduser
+
+    real_path_expanduser = pathlib.Path.expanduser
+
+    def path_expanduser(self):
+        home = _redirected_home()
+        text = str(self)
+        if home and (text == "~" or text[:2] in ("~/", "~\\")):
+            return pathlib.Path(expanduser(text))
+        return real_path_expanduser(self)
+
+    pathlib.Path.expanduser = path_expanduser
+
+
+_install_posix_home_expansion_shim()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "ssh: requires a reachable SSH server "
                   "(set PORTAL_TEST_LIVE=1 to run)"
     )
-
 
 def pytest_collection_modifyitems(config, items):
     """Auto-skip live SSH tests unless PORTAL_TEST_LIVE is set."""

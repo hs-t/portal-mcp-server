@@ -8,7 +8,7 @@ ignored — the function falls back to the platform default.
 from __future__ import annotations
 
 import logging
-import re
+from pathlib import Path
 
 import pytest
 
@@ -125,11 +125,20 @@ def test_credential_agent_socket_override_absolute_is_honoured(
 
 
 def test_resolved_paths_are_under_platform_dirs(monkeypatch, tmp_path):
-    """Without any override, resolved paths sit under platformdirs locations."""
-    monkeypatch.setenv("HOME", str(tmp_path))
-    # We don't pin a platform here — just assert each resolver returns an
-    # absolute path rooted at the test HOME (platformdirs picks the right
-    # base for the current OS).
+    """Without any override, resolved paths sit under platformdirs locations.
+
+    The subject is the *composition* (resolver -> platform dir + filename), not
+    platformdirs' own base-directory choice — which differs by OS (``$HOME`` on
+    POSIX, ``%LOCALAPPDATA%`` on Windows where it deliberately ignores HOME) and
+    is cached per process. Stubbing ``_DIRS`` asserts the same thing identically
+    on every platform instead of depending on the runner's home layout.
+    """
+    class _FakeDirs:
+        user_config_dir = str(tmp_path / "cfg")
+        user_state_dir = str(tmp_path / "state")
+        user_log_dir = str(tmp_path / "log")
+
+    monkeypatch.setattr(paths, "_DIRS", _FakeDirs())
     for resolver in (
         paths.hosts_yaml_path,
         paths.policies_yaml_path,
@@ -138,11 +147,8 @@ def test_resolved_paths_are_under_platform_dirs(monkeypatch, tmp_path):
     ):
         p = resolver()
         assert p.is_absolute()
-        # On Linux/macOS the resolved path will start with $HOME; on
-        # Windows the test HOME would still appear in %LOCALAPPDATA% only
-        # if the runner sets it that way, so we use a permissive check.
-        match = re.search(re.escape(str(tmp_path)), str(p))
-        assert match, f"{resolver.__name__} -> {p!r} does not contain {tmp_path!r}"
+        assert str(tmp_path) in str(p), (
+            f"{resolver.__name__} -> {p!r} escaped {tmp_path!r}")
 
 
 # ── OpenSSH client config discovery ──────────────────────────────────────────
@@ -237,7 +243,6 @@ def test_ssh_config_none_is_case_insensitive(monkeypatch, tmp_path):
 
 
 def test_system_ssh_config_path_posix(monkeypatch):
-    from pathlib import Path
     monkeypatch.setattr(paths.sys, "platform", "linux")
     assert paths.system_ssh_config_path() == Path("/etc/ssh/ssh_config")
 
